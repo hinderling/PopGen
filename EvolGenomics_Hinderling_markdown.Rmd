@@ -1,0 +1,246 @@
+---
+title: "Estimating effective population sizes with coalescent simulations"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Simulating segregating sites
+Coalescent simulations are used to obtain the theoretical distribution of segregating sites, as a function of the population size. Assumed is that mutations follow a poisson distribution, with parameter the product of the total branch length, the mutation rate per site per generation, and the sequence length. The distribution is compared to data by [Enard et al. (2002)](https://www.nature.com/articles/nature01025), with the final goal of determining which simulated population size best fits the observed data. Libraries used: `ggplot2, gridExtra, ODS`
+
+Given is the following data:
+```{r given_data}
+n <- 20         # sample size: 20 humans
+bp.obs <- 14063 # base pairs analyzed
+s.obs <- 47     # segregating sites observed
+m <- 1.4*10^-8  # mutation rate
+```
+
+Total branch length and mutations can be simulated as a function of effective population size (`Ne`) and sample size (`n`)
+```{r sim_coalescence}
+sim_coalescence<- function(Ne,n){
+  time <- 0
+  mutations <- 0
+  probs <- choose(20:2,2)*1/(2*Ne) #probability that two lines coalesc in diploid organisms
+  i <- 20
+  for (prob in probs){
+    time <- time + rgeom(1,prob)*i #take random sample of a geometric distr.
+    i <- i-1
+  }
+  mutations <- rpois(1,time*m*bp.obs) #mutations follow a poisson distribution
+  return(cbind(time,mutations)) #returns total branch length and mutations 
+}
+```
+
+Similarly the expected coalescensce times can be calculated
+```{r exp_coalescence}
+exp_coalescence <- function(Ne,n){
+  time <- 0
+  for (i in 2:n-1){ 
+    time <- time + 1/i
+  }
+  return(time*4*Ne)
+}
+```
+
+
+## Compare two population sizes
+For now lets just test how well two hypotheses about the effective population sites match the observed data other: $H_a$: `Ne` = 10'000, $H_b$: `Ne` = 1'000'000.
+
+```{r ne_hypotheses}
+Ne_a <- 10000
+Ne_b <- 1000000
+Nb_simulations <- 10000
+sim_a <- replicate(Nb_simulations, sim_coalescence(Ne_a, n), simplify=TRUE)
+sim_b <- replicate(Nb_simulations, sim_coalescence(Ne_b, n), simplify=TRUE)
+```
+
+Plot the distribution of simulations, the means and expected theoretical values in a histogram.
+```{r ne_hypotheses_plots_1, echo=FALSE, fig.height = 3}
+library(ggplot2)
+library(gridExtra)
+tot_branch_lengths_a <- sim_a[1,] 
+tot_mutations_a <- sim_a[2,]
+tot_branch_lengths_b <- sim_b[1,] 
+tot_mutations_b <- sim_b[2,]
+
+tot_branch_lengths.expected_a <- exp_coalescence(Ne_a,n)
+tot_branch_lengths.mean_a <- mean(tot_branch_lengths_a)
+tot_branch_lengths.expected_b <- exp_coalescence(Ne_b,n)
+tot_branch_lengths.mean_b <- mean(tot_branch_lengths_b)
+
+
+p1 <- ggplot() + aes(tot_branch_lengths_a)+ geom_histogram(bins = 20)
+p2 <- ggplot() + aes(tot_branch_lengths_b)+ geom_histogram(bins = 20)
+p1 <- p1 + geom_vline(xintercept=tot_branch_lengths.expected_a, linetype="dashed", color = "red") + annotate("text", x = 330000, y = 1700, label = "expected mean", color="red") +  labs(title = "Ne = 10'000", x = "total branch length")
+p2 <- p2 + geom_vline(xintercept=tot_branch_lengths.expected_b, linetype="dashed", color = "red") + labs(title = "Ne = 1'000'000", x = "total branch length")
+p1 <- p1 + geom_vline(xintercept=tot_branch_lengths.mean_a, linetype="dotted", color = "blue") + annotate("text", x = 330000, y = 1400, label = "actual mean     ", color="blue")
+p2 <- p2 + geom_vline(xintercept=tot_branch_lengths.mean_b, linetype="dotted", color = "blue")
+grid.arrange(p1, p2, nrow = 1)
+```
+
+---
+
+Lets look how they fit to our data:
+
+```{r ne_hypotheses_plots_2, echo=FALSE, fig.height = 3}
+p1 <- ggplot() + aes(tot_mutations_a)+ geom_histogram(bins = 20) + geom_vline(xintercept=47,  color = "red") + annotate("text", x = 80, y = 1500, label = "observed mutations", color="red") +  labs(title = "Ne = 10'000", x = "total mutations")
+p2 <- ggplot() + aes(tot_mutations_b)+ geom_histogram(bins = 20) + geom_vline(xintercept=47,  color = "red") +  labs(title = "Ne = 1'000'000", x = "total mutations")
+grid.arrange(p1, p2, nrow = 1)
+```
+
+The effective population size of 10'000 seems to fit our observed mutations better.
+
+---
+
+Lets approximate the likelihood of both hypotheses to quantify our observation. Calculate the ratio of the simulations with the same amount of mutations we observed:
+
+```{r hypotheses_likelihood}
+length(tot_mutations_a[tot_mutations_a == s.obs])/length(tot_mutations_a)
+length(tot_mutations_b[tot_mutations_b == s.obs])/length(tot_mutations_b)
+```
+The likelihood of H_a is higher (69 simulations of 10'000 with exactly 47 mutations) than H_b (0 simulations of 10'000 with exactly 47 mutations).
+From the plots above we can also see that H_a does not seem to be the optimum. We can further improve our model. 
+
+## Approximating most likely effective population size with expectation values
+Lets find the theoretical optimum:
+
+```{r likelihood_expected, fig.height = 3, fig.width = 4, echo=FALSE}
+# Calculates the expected mutations
+expected_mut <- function(Ne,n){
+  time <- 0
+  for (i in 2:n-1){ 
+    time <- time + 1/i
+  }
+  time <-time*4*Ne
+  return(time*m*bp.obs)
+}
+
+library(ODS)
+muts <- vector()
+j <- 1
+for (i in logspace(1,5,50)){
+  muts[j] <- expected_mut(i, n)
+  j = j+1
+}
+
+plot(muts, logspace(2,5,50),type = "l",xlab = "expected mutations", ylab = "effective population size (log)")
+abline(v=s.obs, col="red")
+text(x=120,y=80000,"observed mutations",col = "red")
+```
+```{r fun_approximation}
+approx = approxfun(muts, logspace(2,5,50))
+intersect <- approx(s.obs)
+intersect
+```
+This is our approximated optimum. Plotted: 
+
+```{r fun_approximation_plot, fig.height = 3, fig.width = 4, echo=FALSE}
+plot(muts, logspace(2,5,50),type = "l",xlab = "expected mutations", ylab = "effective population size (log)")
+abline(v=s.obs, col="red")
+text(x=130,y=80000,"observed mutations",col = "red")
+abline(h=intersect, col="darkgreen")
+text(x=120,y=10000,"most likely Ne",col = "darkgreen")
+
+likelihood = approxfun(muts, logspace(2,5,50))
+likelyhood <- likelihood(s.obs)
+```
+
+## Approximating most likely effective population size with simulations
+Do a hyperparameter search for logarithmically spaced values of Ne. With 100 replications and 100 parameters (`logspace(2,5,100)`) tested we get the following distribution: 
+```{r sim_approximation, echo = FALSE}
+replications <- 100
+resolution <- 100
+muts <- array(dim = c(resolution,replications))
+j <- 1
+
+for (i in logspace(2,5,resolution)){
+  sim <-  replicate(replications, sim_coalescence(i, n), simplify=TRUE)
+  muts[j,] <- sim[2,]
+  j = j+1
+}
+
+# calculate mean collumn wise
+mutations_mean <- rowMeans(muts, na.rm = TRUE)
+
+plot(logspace(2,5,resolution),mutations_mean, type = "l", xlab = "effective population size (log scale)", ylab = "mutations", main = "100 replications")#,xaxt="n")
+
+for (i in 1:replications) {
+  points(logspace(2,5,resolution),muts[,i], type = "l",col = rgb(0, 0, 255, max = 255, alpha = 15, names = "blue50"))
+} 
+lines(logspace(2,5,resolution),mutations_mean)
+
+t_tests <- apply(muts, 1, t.test)
+#upper <- t_tests[,]$conf.int[1]
+conf_ints <- array(dim = c(2,resolution)) 
+for (i in 1:resolution) {
+  conf_ints[,i] <- t_tests[i][[1]]$conf.int
+} 
+conf_ints[1,] <- conf_ints[1,]
+abline(h=s.obs, col="red")
+lines(logspace(2,5,resolution), conf_ints[1,], type = "l",col = rgb(0, 0, 0, max = 255, alpha = 255, names = "asdf"),lty=2)
+lines(logspace(2,5,resolution), conf_ints[2,], type = "l",col = rgb(0, 0, 0, max = 255, alpha = 255, names = "black40"),lty=2)
+legend(1, 250, legend=c("observed mutations", "simulation run","mean of all runs", "95% conf. interval of mean"),
+       col=c("red", "blue", "black", "black"), lty=c(1,1,1,2), cex=0.8)
+```
+
+Or as function of likelihood as calculated above:
+
+```{r sim_approximation_likelihood, echo = FALSE, fig.height = 3}
+occurences <- array(dim = resolution)
+i <- 1
+for (i in 1:resolution){
+  col <- muts[i,]
+  occurences[i] <- length(col[col == s.obs])
+}
+par(mfrow=c(1,3))
+
+plot(logspace(2,5,resolution),occurences, type = "l", main = "100 replications", xlab = "Ne")
+
+
+
+replications <- 1000
+resolution <- 100
+muts <- array(dim = c(resolution,replications))
+j <- 1
+
+for (i in logspace(2,5,resolution)){
+  sim <-  replicate(replications, sim_coalescence(i, n), simplify=TRUE)
+  muts[j,] <- sim[2,]
+  j = j+1
+}
+occurences <- array(dim = resolution)
+i <- 1
+for (i in 1:resolution){
+  col <- muts[i,]
+  occurences[i] <- length(col[col == s.obs])
+}
+plot(logspace(2,5,resolution),occurences, type = "l", main = "1000 replications", xlab = "Ne")
+
+replications <- 10000
+resolution <- 100
+muts <- array(dim = c(resolution,replications))
+j <- 1
+
+for (i in logspace(2,5,resolution)){
+  sim <-  replicate(replications, sim_coalescence(i, n), simplify=TRUE)
+  muts[j,] <- sim[2,]
+  j = j+1
+}
+occurences <- array(dim = resolution)
+i <- 1
+for (i in 1:resolution){
+  col <- muts[i,]
+  occurences[i] <- length(col[col == s.obs])
+}
+plot(logspace(2,5,resolution),occurences, type = "l", main = "10000 replications", xlab = "Ne")
+```
+
+The peak maximum likelihood becomes more and more certain with increasing replications. Lets check it for `Ne`=10'000:
+```{r most_likeli_replication}
+logspace(2,5,resolution)[which.max(occurences)]
+```
+This is the value of `Ne` which lead to the best result in this simulation run. 
+Keep in mind that we only simulated 100 different values of `Ne`, which is a coarse resolution.
